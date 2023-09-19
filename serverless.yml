@@ -1,0 +1,113 @@
+org: dcalled
+app: image-processing
+service: image-processing
+frameworkVersion: '3'
+
+plugins:
+  - serverless-plugin-typescript
+
+useDotenv: true
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-1
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: 
+            - 's3:GetObject'
+            - 's3:PutObject'
+            - 's3:DeleteObject'
+            - 's3:CreateBucket'
+            - 'dynamodb:*'
+          Resource: 
+            - '*'          
+  environment:
+    PHOTOS_BUCKET_NAME: !Ref PhotosBucket
+    THUMBNAILS_BUCKET_NAME: !Ref ThumbnailsBucket
+
+functions:
+  proccessImgage:
+    handler: ImageProcessor.processSqsEvent
+    events:
+      - sqs: 
+          arn: !GetAtt TriggerQueue.Arn
+
+resources:
+  Resources:
+    TriggerQueue:
+      Type: AWS::SQS::Queue
+    
+    ThumbnailTopic:
+      Type: AWS::SNS::Topic
+    
+    PhotosBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: !Sub
+          - 'photos-${RandomGUID}'
+          - { RandomGUID: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId ]]]] }
+        AccessControl: Private
+        NotificationConfiguration:
+          QueueConfigurations:
+            - Event: s3:ObjectCreated:Put
+              Queue: !GetAtt TriggerQueue.Arn
+      DependsOn: QueueNotificationPolicy
+
+    ThumbnailsBucket:
+      Type: 'AWS::S3::Bucket'
+      Properties:
+        BucketName: !Sub
+          - 'thumbnails-${RandomGUID}'
+          - { RandomGUID: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId ]]]] }
+        AccessControl: Private
+        NotificationConfiguration:
+          TopicConfigurations:
+            - Event: s3:ObjectCreated:Put
+              Topic: !Ref ThumbnailTopic
+      DependsOn: SNSPolicy
+    
+    QueueNotificationPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Sid: 'PutS3Objs'
+              Action: 'SQS:SendMessage'
+              Resource: '*'
+              Principal: 
+                AWS: '*'
+              Condition:
+                ArnLike:
+                  'aws:SourceArn': 'arn:aws:s3:::photos*'
+        Queues:
+          - !Ref TriggerQueue
+    
+    SNSPolicy:
+      Type: AWS::SNS::TopicPolicy
+      Properties:
+        PolicyDocument:
+          Version: "2008-10-17"
+          Statement:
+            - Effect: Allow
+              Sid: 'PutS3Objs'
+              Action: 'SNS:Publish'
+              Resource: '*'
+              Principal: 
+                AWS: '*'
+              Condition:
+                ArnLike:
+                  'aws:SourceArn': 'arn:aws:s3:::thumbnails*'
+        Topics:
+          - !Ref ThumbnailTopic
+    
+    MySubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Endpoint: ${env:NOTIFICATION_MAIL}
+        Protocol: email
+        TopicArn: !Ref ThumbnailTopic
